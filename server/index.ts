@@ -5,6 +5,8 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "node:http";
 
+import http from "node:http";
+
 const app = express();
 const httpServer = createServer(app);
 
@@ -35,30 +37,48 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
-app.use((req, res, next) => {
-  const start = Date.now();
-  const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
+// Proxy /api calls to backend server at http://3.110.104.91:8080
+const BACKEND_TARGET = process.env.BACKEND_API_URL || "http://3.110.104.91:8080";
 
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
+app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const targetUrl = new URL(BACKEND_TARGET);
+    const proxyHeaders = { ...req.headers };
+    proxyHeaders.host = targetUrl.host;
 
-  res.on("finish", () => {
-    const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+    const options: http.RequestOptions = {
+      hostname: targetUrl.hostname,
+      port: targetUrl.port || 80,
+      path: `/api${req.url}`,
+      method: req.method,
+      headers: proxyHeaders,
+    };
+
+    const proxyReq = http.request(options, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
+      proxyRes.pipe(res, { end: true });
+    });
+
+    proxyReq.on("error", (err) => {
+      console.error(`[Proxy Error] ${req.method} /api${req.url}:`, err.message);
+      if (!res.headersSent) {
+        res.status(502).json({ message: "Bad Gateway - Proxy Error", error: err.message });
       }
+    });
 
-      log(logLine);
+    if (req.rawBody && Buffer.isBuffer(req.rawBody)) {
+      proxyReq.write(req.rawBody);
+    } else if (req.body && Object.keys(req.body).length > 0) {
+      const bodyData = JSON.stringify(req.body);
+      proxyReq.setHeader("content-type", "application/json");
+      proxyReq.setHeader("content-length", Buffer.byteLength(bodyData));
+      proxyReq.write(bodyData);
     }
-  });
 
-  next();
+    proxyReq.end();
+  } catch (err) {
+    next(err);
+  }
 });
 
 (async () => {
