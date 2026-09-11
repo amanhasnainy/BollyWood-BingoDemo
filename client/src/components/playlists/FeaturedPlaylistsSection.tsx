@@ -36,7 +36,7 @@ export function FeaturedPlaylistsSection() {
         name: p.name || (p as any).title || match.name,
         songCount: count,
         duration: (p as any).duration || match.duration || "45 mins",
-        tags: (p as any).tags || match.tags || ["Bollywood", "Hits"],
+        tags: (p as any).tags || (match as any)?.tags || ["Bollywood", "Hits"],
       };
     });
   }, [fetchedPlaylists]);
